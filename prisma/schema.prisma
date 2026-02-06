@@ -1,0 +1,597 @@
+// NomadShift Platform - Database Schema
+// Prisma ORM Schema for PostgreSQL 14+
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ========================================
+// 1. IDENTITY & ACCESS CONTEXT
+// ========================================
+
+/// User table - Authentication and authorization
+model User {
+  id            Int       @id @default(autoincrement())
+  email         String    @unique
+  passwordHash  String    @map("password_hash")
+  role          UserRole  @default(WORKER)
+  emailVerified Boolean   @default(false) @map("email_verified")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+
+  // Relations
+  workerProfile         WorkerProfile?
+  businessProfiles      BusinessProfile[]
+  applications          Application[]
+  reviewsAsReviewer     Review[]        @relation("Reviewer")
+  reviewsAsReviewee     Review[]        @relation("Reviewee")
+  threadParticipants    ThreadParticipant[]
+  messages              Message[]
+  notificationPreferences NotificationPreference?
+  legalAcceptances      LegalAcceptance[]
+  auditLogs             AuditLog[]
+
+  @@map("users")
+}
+
+enum UserRole {
+  WORKER
+  BUSINESS
+  ADMIN
+}
+
+// ========================================
+// 2. PROFILE MANAGEMENT CONTEXT
+// ========================================
+
+/// Worker profile - Seasonal worker information
+model WorkerProfile {
+  id           Int      @id @default(autoincrement())
+  userId       Int      @unique @map("user_id")
+  firstName    String?  @map("first_name")
+  lastName     String?  @map("last_name")
+  dateOfBirth   DateTime? @map("date_of_birth")
+  nationality  String?
+  languages    Json?    // CEFR levels: [{language: "en", level: "C1"}]
+  skills       Json?    // Array of skill strings
+  bio          String?  @db.Text
+  locationCity String?  @map("location_city")
+  locationCountry String? @map("location_country")
+  latitude     Float?
+  longitude    Float?
+  profilePhoto String?  @map("profile_photo") // S3 key
+  prestigeLevel PrestigeLevel @default(BRONZE) @map("prestige_level")
+  averageRating Float? @default(0) @map("average_rating")
+  totalReviews Int @default(0) @map("total_reviews")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  user            User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  applications    Application[]
+  messages        Message[]
+
+  @@index([latitude, longitude], type: Gin)
+  @@map("worker_profiles")
+}
+
+/// Business profile - Tourism business information
+model BusinessProfile {
+  id              Int      @id @default(autoincrement())
+  userId          Int      @map("user_id")
+
+  // Business Information
+  businessName    String   @map("business_name") @db.VarChar(100)
+  businessType    BusinessType @map("business_type")
+  businessTypeCustom String? @map("business_type_custom") @db.VarChar(100)
+  description     String   @db.Text
+
+  // Location
+  locationAddress String   @map("location_address") @db.VarChar(255)
+  locationCity    String   @map("location_city") @db.VarChar(100)
+  locationCountry String   @map("location_country") @db.VarChar(100)
+  locationPostalCode String? @map("location_postal_code") @db.VarChar(20)
+  locationLatitude Float   @map("location_latitude")
+  locationLongitude Float  @map("location_longitude")
+
+  // Contact
+  contactEmail    String   @map("contact_email") @db.VarChar(255)
+  contactPhone    String   @map("contact_phone") @db.VarChar(50)
+  websiteUrl      String?  @map("website_url") @db.VarChar(255)
+
+  // Status
+  status          BusinessStatus @default(ACTIVE)
+  isVerified      Boolean  @default(false) @map("is_verified")
+  isPrimary       Boolean  @default(false) @map("is_primary")
+
+  // Reputation
+  prestigeLevel    PrestigeLevel @default(BRONZE) @map("prestige_level")
+  averageRating   Float    @default(0) @map("average_rating") @db.Decimal(3, 2)
+  totalReviews    Int      @default(0) @map("total_reviews")
+  hasGoodEmployerBadge Boolean @default(false) @map("has_good_employer_badge")
+
+  // Badge metadata (SPEC-REV-001)
+  goodEmployerBadgeAwardedAt DateTime? @map("good_employer_badge_awarded_at")
+  goodEmployerBadgeRevokedAt DateTime? @map("good_employer_badge_revoked_at")
+  goodEmployerBadgeCriteria Json?    @map("good_employer_badge_criteria") // {rating: 4.7, reviews: 15}
+
+  // Timestamps
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  user                User                        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  jobPostings         JobPosting[]
+  messages            Message[]
+  photos              BusinessPhoto[]
+  verificationDocuments BusinessVerificationDocument[]
+  changeHistory       BusinessProfileChange[]
+
+  @@index([locationLatitude, locationLongitude])
+  @@index([userId])
+  @@index([status])
+  @@index([businessType])
+  @@index([averageRating, totalReviews])
+  @@index([hasGoodEmployerBadge])
+  @@map("business_profiles")
+}
+
+enum BusinessType {
+  RESTAURANT
+  BAR
+  CAFE
+  BOUTIQUE
+  HOSTEL
+  HOTEL
+  TOUR_OPERATOR
+  RETAIL
+  OTHER
+}
+
+enum BusinessStatus {
+  ACTIVE
+  INACTIVE
+  SUSPENDED
+}
+
+enum PrestigeLevel {
+  BRONZE
+  SILVER
+  GOLD
+  PLATINUM
+}
+
+// ========================================
+// BUSINESS PROFILE EXTENSIONS
+// ========================================
+
+/// Business photo - Managed photo gallery
+model BusinessPhoto {
+  id                Int      @id @default(autoincrement())
+  businessProfileId Int      @map("business_profile_id")
+
+  fileName          String   @map("file_name") @db.VarChar(255)
+  fileUrl           String   @map("file_url") @db.VarChar(500)
+  thumbnailUrl      String   @map("thumbnail_url") @db.VarChar(500)
+
+  fileSizeBytes     Int      @map("file_size_bytes")
+  width             Int
+  height            Int
+
+  uploadOrder       Int      @default(0) @map("upload_order")
+  isPrimary         Boolean  @default(false) @map("is_primary")
+
+  createdAt         DateTime @default(now()) @map("created_at")
+
+  // Relations
+  businessProfile   BusinessProfile @relation(fields: [businessProfileId], references: [id], onDelete: Cascade)
+
+  @@unique([businessProfileId, isPrimary], name: "unique_primary_photo")
+  @@index([businessProfileId])
+  @@index([uploadOrder])
+  @@map("business_photos")
+}
+
+/// Business verification document - Document upload for verification
+model BusinessVerificationDocument {
+  id                Int      @id @default(autoincrement())
+  businessProfileId Int      @map("business_profile_id")
+
+  documentType      VerificationDocumentType @map("document_type")
+  fileUrl           String   @map("file_url") @db.VarChar(500)
+  fileName          String   @map("file_name") @db.VarChar(255)
+
+  uploadDate        DateTime @default(now()) @map("upload_date")
+  verificationStatus VerificationStatus @default(PENDING) @map("verification_status")
+
+  reviewedBy        Int?     @map("reviewed_by")
+  reviewDate        DateTime? @map("review_date")
+  rejectionReason   String?  @db.Text @map("rejection_reason")
+
+  // Relations
+  businessProfile   BusinessProfile @relation(fields: [businessProfileId], references: [id], onDelete: Cascade)
+
+  @@index([businessProfileId])
+  @@index([verificationStatus])
+  @@map("business_verification_documents")
+}
+
+enum VerificationDocumentType {
+  BUSINESS_LICENSE
+  TAX_REGISTRATION
+  CHAMBER_COMMERCE
+  HOSPITALITY_LICENSE
+  OTHER
+}
+
+enum VerificationStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+/// Business profile change - Audit log for profile changes
+model BusinessProfileChange {
+  id                Int      @id @default(autoincrement())
+  businessProfileId Int      @map("business_profile_id")
+
+  changedField      String   @map("changed_field") @db.VarChar(100)
+  oldValue          String?  @db.Text @map("old_value")
+  newValue          String?  @db.Text @map("new_value")
+
+  changedAt         DateTime @default(now()) @map("changed_at")
+  changedBy         Int      @map("changed_by")
+
+  // Relations
+  businessProfile   BusinessProfile @relation(fields: [businessProfileId], references: [id], onDelete: Cascade)
+
+  @@index([businessProfileId])
+  @@index([changedAt])
+  @@map("business_profile_changes")
+}
+
+// ========================================
+// 3. JOB MARKETPLACE CONTEXT
+// ========================================
+
+/// Job posting - Temporary job listings
+model JobPosting {
+  id               Int       @id @default(autoincrement())
+  businessId       Int       @map("business_id")
+  title            String
+  description      String    @db.Text
+  requirements     String?   @db.Text
+  category         JobCategory
+  workType         WorkType  @map("work_type")
+  startDate        DateTime  @map("start_date")
+  endDate          DateTime  @map("end_date")
+  compensationMin   Int?      @map("compensation_min") // EUR per week
+  compensationMax   Int?      @map("compensation_max") // EUR per week
+  accommodationIncluded Boolean @default(false) @map("accommodation_included")
+  mealsIncluded    Boolean   @default(false) @map("meals_included")
+  requiredLanguages Json?     @map("required_languages") // [{language: "en", level: "B2"}]
+  skills           Json?     // Array of required skills
+  status           JobStatus @default(DRAFT)
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @updatedAt @map("updated_at")
+
+  // Relations
+  businessProfile BusinessProfile @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  applications    Application[]
+
+  @@index([status])
+  @@index([startDate, endDate])
+  @@index([businessId])
+  @@map("job_postings")
+}
+
+enum JobCategory {
+  HOSPITALITY
+  FOOD_SERVICE
+  TOUR_GUIDE
+  ACTIVITIES_INSTRUCTOR
+  CLEANING
+  MAINTENANCE
+  ADMINISTRATION
+  MARKETING
+  OTHER
+}
+
+enum WorkType {
+  FULL_TIME
+  PART_TIME
+  SEASONAL
+  TEMPORARY
+  VOLUNTEER
+}
+
+enum JobStatus {
+  DRAFT
+  ACTIVE
+  CLOSED
+  FILLED
+  CANCELLED
+}
+
+/// Application - Job applications
+model Application {
+  id          Int             @id @default(autoincrement())
+  jobId       Int             @map("job_id")
+  workerId    Int             @map("worker_id")
+  status      ApplicationStatus @default(PENDING)
+  coverLetter String?         @db.Text @map("cover_letter")
+  createdAt   DateTime        @default(now()) @map("created_at")
+  updatedAt   DateTime        @updatedAt @map("updated_at")
+
+  // Relations
+  jobPosting   JobPosting   @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  workerProfile WorkerProfile @relation(fields: [workerId], references: [id], onDelete: Cascade)
+  workAgreement WorkAgreement?
+
+  @@unique([jobId, workerId])
+  @@index([status])
+  @@index([workerId])
+  @@map("applications")
+}
+
+enum ApplicationStatus {
+  PENDING
+  ACCEPTED
+  REJECTED
+  WITHDRAWN
+  IN_PROGRESS
+  COMPLETED
+}
+
+/// Work agreement - Confirmed work arrangements
+model WorkAgreement {
+  id             Int       @id @default(autoincrement())
+  applicationId  Int       @unique @map("application_id")
+  startDate      DateTime  @map("start_date")
+  endDate        DateTime  @map("end_date")
+  compensation   Int       // EUR total
+  accommodation  String?   @db.Text
+  meals          String?   @db.Text
+  workHours      String?   @map("work_hours") // e.g., "40h/week"
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  // Relations
+  application Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  reviews     Review[]
+
+  @@map("work_agreements")
+}
+
+// ========================================
+// 4. MESSAGING CONTEXT
+// ========================================
+
+/// Message thread - Conversation between users
+model MessageThread {
+  id        Int      @id @default(autoincrement())
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  participants ThreadParticipant[]
+  messages     Message[]
+
+  @@map("message_threads")
+}
+
+/// Thread participant - Users in a conversation
+model ThreadParticipant {
+  id      Int           @id @default(autoincrement())
+  threadId Int          @map("thread_id")
+  userId  Int           @map("user_id")
+  lastReadAt DateTime?  @map("last_read_at")
+
+  // Relations
+  thread MessageThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  user   User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([threadId, userId])
+  @@map("thread_participants")
+}
+
+/// Message - Individual messages
+model Message {
+  id        Int      @id @default(autoincrement())
+  threadId  Int      @map("thread_id")
+  senderId  Int      @map("sender_id")
+  content   String   @db.Text
+  imageUrl  String?  @map("image_url") // S3 key
+  readAt    DateTime? @map("read_at")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  // Relations
+  thread        MessageThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  senderProfile WorkerProfile @relation(fields: [senderId], references: [id])
+
+  @@index([threadId])
+  @@index([senderId])
+  @@map("messages")
+}
+
+// ========================================
+// 5. REPUTATION CONTEXT
+// ========================================
+
+/// Review - Bilateral reviews with publication workflow
+model Review {
+  id              Int       @id @default(autoincrement())
+  workAgreementId Int       @unique @map("work_agreement_id")
+  reviewerId      Int       @map("reviewer_id")
+  revieweeId      Int       @map("reviewee_id")
+  overallRating   Int       @map("overall_rating")
+  communication   Int?      @default(0)
+  punctuality     Int?      @default(0)
+  qualityOfWork   Int?      @map("quality_of_work") @default(0)
+  cleanliness     Int?      @default(0)
+  comment         String?   @db.Text
+
+  // Publication workflow (SPEC-REV-001)
+  status          ReviewStatus @default(PENDING)
+  submittedAt     DateTime  @default(now()) @map("submitted_at")
+  publishedAt     DateTime? @map("published_at")
+
+  // Response to review (SPEC-REV-001)
+  response        String?   @db.Text
+  responseSubmittedAt DateTime? @map("response_submitted_at")
+
+  // Moderation (SPEC-REV-001)
+  flagCount       Int       @default(0) @map("flag_count")
+  flagReasons     Json?     // [{category: "OFFENSIVE", comment: "..."}]
+  moderationStatus ModerationStatus? @default(null) @map("moderation_status")
+
+  // Audit trail (SPEC-REV-001)
+  auditLog        Json?     @map("audit_log") // All changes tracked
+
+  // Legacy field (deprecated - use status)
+  visible         Boolean   @default(false)
+
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  // Relations
+  workAgreement WorkAgreement @relation(fields: [workAgreementId], references: [id])
+  reviewer      User           @relation("Reviewer", fields: [reviewerId], references: [id])
+  reviewee      User           @relation("Reviewee", fields: [revieweeId], references: [id])
+
+  @@index([revieweeId])
+  @@index([status])
+  @@index([revieweeId, status])
+  @@index([moderationStatus])
+  @@map("reviews")
+}
+
+enum ReviewStatus {
+  PENDING       // Submitted, waiting for counterpart or 14-day deadline
+  PUBLISHED     // Visible to public
+  FLAGGED       // Under moderation review
+  HIDDEN        // Hidden by moderator
+}
+
+enum ModerationStatus {
+  PENDING_REVIEW
+  APPROVED
+  HIDDEN
+  SUSPENDED_USER
+}
+
+/// Prestige level history - Track prestige changes over time (SPEC-REV-001)
+model PrestigeLevelHistory {
+  id               Int      @id @default(autoincrement())
+  userId           Int      @map("user_id")
+  oldLevel         PrestigeLevel?
+  newLevel         PrestigeLevel @map("new_level")
+  completedJobsAtTime Int   @map("completed_jobs_at_time")
+  ratingAtTime     Float    @map("rating_at_time") @db.Decimal(3, 2)
+  changedAt        DateTime @default(now()) @map("changed_at")
+
+  @@index([userId])
+  @@index([changedAt])
+  @@map("prestige_level_history")
+}
+
+// ========================================
+// 6. NOTIFICATION CONTEXT
+// ========================================
+
+/// Notification preferences - User notification settings
+model NotificationPreference {
+  id          Int  @id @default(autoincrement())
+  userId      Int  @unique @map("user_id")
+
+  // Push notification settings
+  pushApplications     Boolean @default(true) @map("push_applications")
+  pushMessages         Boolean @default(true) @map("push_messages")
+  pushReviews          Boolean @default(true) @map("push_reviews")
+  pushWorkAgreements   Boolean @default(true) @map("push_work_agreements")
+  quietHoursStart      String? @map("quiet_hours_start") // "22:00"
+  quietHoursEnd        String? @map("quiet_hours_end")   // "07:00"
+
+  // Email notification settings
+  emailApplications    Boolean @default(true) @map("email_applications")
+  emailMessages        Boolean @default(true) @map("email_messages")
+  emailReviews         Boolean @default(true) @map("email_reviews")
+  emailWeeklyDigest    Boolean @default(true) @map("email_weekly_digest")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("notification_preferences")
+}
+
+// ========================================
+// 7. COMPLIANCE CONTEXT
+// ========================================
+
+/// Legal agreement - Terms of service, privacy policy, etc.
+model LegalAgreement {
+  id          Int      @id @default(autoincrement())
+  title       String
+  type        AgreementType
+  version     String
+  content     String   @db.Text
+  active      Boolean  @default(true)
+  effectiveAt DateTime @map("effective_at")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  // Relations
+  acceptances LegalAcceptance[]
+
+  @@index([type])
+  @@map("legal_agreements")
+}
+
+enum AgreementType {
+  TERMS_OF_SERVICE
+  PRIVACY_POLICY
+  LIABILITY_WAIVER
+  CANCELLATION_POLICY
+  DATA_PROCESSING
+}
+
+/// Legal acceptance - User agreement acceptance records
+model LegalAcceptance {
+  id          Int      @id @default(autoincrement())
+  userId      Int      @map("user_id")
+  agreementId Int      @map("agreement_id")
+  ipAddress   String?  @map("ip_address")
+  acceptedAt  DateTime @default(now()) @map("accepted_at")
+
+  // Relations
+  user     User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  agreement LegalAgreement @relation(fields: [agreementId], references: [id])
+
+  @@unique([userId, agreementId])
+  @@index([userId])
+  @@map("legal_acceptances")
+}
+
+/// Audit log - Immutable audit trail (7-year retention)
+model AuditLog {
+  id        Int      @id @default(autoincrement())
+  userId    Int      @map("user_id")
+  action    String   // LOGIN, LOGOUT, PROFILE_UPDATE, etc.
+  details   Json     // Additional context
+  timestamp DateTime @default(now())
+
+  // Relations
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@index([action])
+  @@index([timestamp])
+  @@map("audit_logs")
+}
