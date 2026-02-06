@@ -377,3 +377,7 @@ Hemos tomado una idea abstracta ("plataforma para nómadas") y la hemos transfor
 **Estado:** 🎯 **PLANIFICACIÓN COMPLETA - LISTO PARA IMPLEMENTAR**
 
 <moai>DONE</moai>
+hola mundo
+
+  git config --global user.email "karlamorentin@gmail.com"
+  git config --global user.name "Viviana"
